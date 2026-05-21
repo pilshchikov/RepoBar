@@ -1,11 +1,13 @@
 enum RecentPullRequestScope: String, CaseIterable, Hashable {
     case all
     case mine
+    case toReview
 
     var label: String {
         switch self {
         case .all: "All"
         case .mine: "Mine"
+        case .toReview: "To Review"
         }
     }
 }

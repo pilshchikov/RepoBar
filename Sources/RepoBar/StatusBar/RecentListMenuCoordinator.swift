@@ -409,13 +409,26 @@ final class RecentListMenuCoordinator {
     private func filteredPullRequests(_ items: [RepoPullRequestSummary]) -> [RepoPullRequestSummary] {
         var filtered = items
         let scope = self.appState.session.recentPullRequestScope
-        if scope == .mine {
-            guard case let .loggedIn(user) = self.appState.session.account else { return [] }
-
+        switch scope {
+        case .all:
+            break
+        case .mine:
+            guard case let .loggedIn(user) = self.appState.session.account else {
+                return []
+            }
             filtered = filtered.filter { pullRequest in
                 guard let author = pullRequest.authorLogin else { return false }
 
                 return author.caseInsensitiveCompare(user.username) == .orderedSame
+            }
+        case .toReview:
+            guard case let .loggedIn(user) = self.appState.session.account else {
+                return []
+            }
+            filtered = filtered.filter { pullRequest in
+                pullRequest.requestedReviewerLogins.contains { reviewer in
+                    reviewer.caseInsensitiveCompare(user.username) == .orderedSame
+                }
             }
         }
 
