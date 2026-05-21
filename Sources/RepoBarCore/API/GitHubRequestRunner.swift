@@ -43,9 +43,47 @@ actor GitHubRequestRunner {
         headers: [String: String] = [:],
         useETag: Bool = true
     ) async throws -> (Data, HTTPURLResponse) {
+        try await self.request(
+            method: "GET",
+            url: url,
+            token: token,
+            allowedStatuses: allowedStatuses,
+            headers: headers,
+            body: nil,
+            useETag: useETag
+        )
+    }
+
+    func post(
+        url: URL,
+        token: String,
+        body: Data?,
+        allowedStatuses: Set<Int> = [200, 201, 202, 204],
+        headers: [String: String] = [:]
+    ) async throws -> (Data, HTTPURLResponse) {
+        try await self.request(
+            method: "POST",
+            url: url,
+            token: token,
+            allowedStatuses: allowedStatuses,
+            headers: headers,
+            body: body,
+            useETag: false
+        )
+    }
+
+    private func request(
+        method: String,
+        url: URL,
+        token: String,
+        allowedStatuses: Set<Int>,
+        headers: [String: String],
+        body: Data?,
+        useETag: Bool
+    ) async throws -> (Data, HTTPURLResponse) {
         let startedAt = Date()
-        self.logger.debug("GET \(Self.logPath(for: url))")
-        await self.diag.message("GET \(Self.logPath(for: url))")
+        self.logger.debug("\(method) \(Self.logPath(for: url))")
+        await self.diag.message("\(method) \(Self.logPath(for: url))")
         if await self.etagCache.isRateLimited(), let until = await etagCache.rateLimitUntil() {
             self.logger.warning("Blocked by local rate limit until \(until)")
             await self.diag.message("Blocked by local rateLimit until \(until)")
@@ -64,6 +102,8 @@ actor GitHubRequestRunner {
         }
 
         var request = Self.makeRequest(url: url, token: token, headers: headers, useETag: useETag)
+        request.httpMethod = method
+        request.httpBody = body
         if useETag, let cached = await etagCache.cached(for: url) {
             request.addValue(cached.etag, forHTTPHeaderField: "If-None-Match")
         }
@@ -71,11 +111,11 @@ actor GitHubRequestRunner {
         let (data, responseAny) = try await URLSession.shared.data(for: request)
         guard let response = responseAny as? HTTPURLResponse else { throw URLError(.badServerResponse) }
 
-        await self.logResponse("GET", url: url, response: response, startedAt: startedAt)
+        await self.logResponse(method, url: url, response: response, startedAt: startedAt)
 
         let status = response.statusCode
         if status == 304, useETag, let cached = await etagCache.cached(for: url) {
-            self.logger.debug("HTTP GET \(Self.logPath(for: url)) status=304 cached=true")
+            self.logger.debug("HTTP \(method) \(Self.logPath(for: url)) status=304 cached=true")
             await self.diag.message("304 Not Modified for \(url.lastPathComponent); using cached")
             return (cached.data, response)
         }
@@ -85,7 +125,7 @@ actor GitHubRequestRunner {
             await self.backoff.setCooldown(url: response.url ?? url, until: retryAfter)
             let retryText = RelativeFormatter.string(from: retryAfter, relativeTo: Date())
             let message = "GitHub is generating repository stats; some numbers may be stale. RepoBar will retry \(retryText)."
-            self.logger.warning("HTTP GET \(Self.logPath(for: url)) status=202 retryAfter=\(retryAfter)")
+            self.logger.warning("HTTP \(method) \(Self.logPath(for: url)) status=202 retryAfter=\(retryAfter)")
             await self.diag.message("202 for \(url.lastPathComponent); cooldown until \(retryAfter)")
             throw GitHubAPIError.serviceUnavailable(
                 retryAfter: retryAfter,
@@ -99,7 +139,7 @@ actor GitHubRequestRunner {
 
             // If we still have quota, this 403 is likely permissions/abuse detection; surface it as a normal error.
             if let remaining, remaining > 0 {
-                self.logger.warning("HTTP GET \(Self.logPath(for: url)) status=\(status) remaining=\(remaining)")
+                self.logger.warning("HTTP \(method) \(Self.logPath(for: url)) status=\(status) remaining=\(remaining)")
                 await self.diag.message("403 with remaining=\(remaining) on \(url.lastPathComponent); treating as bad status")
                 throw GitHubAPIError.badStatus(code: status, message: Self.statusMessage(for: status, data: data))
             }
@@ -110,13 +150,13 @@ actor GitHubRequestRunner {
             await self.backoff.setCooldown(url: response.url ?? url, until: resetDate)
             self.lastRateLimitError = "GitHub rate limit hit; resets " +
                 "\(RelativeFormatter.string(from: resetDate, relativeTo: Date()))."
-            self.logger.warning("HTTP GET \(Self.logPath(for: url)) rateLimited status=\(status) reset=\(resetDate)")
+            self.logger.warning("HTTP \(method) \(Self.logPath(for: url)) rateLimited status=\(status) reset=\(resetDate)")
             await self.diag.message("Rate limited on \(url.lastPathComponent); resets \(resetDate)")
             throw GitHubAPIError.rateLimited(until: resetDate, message: self.lastRateLimitError ?? "Rate limited.")
         }
 
         guard allowedStatuses.contains(status) else {
-            self.logger.warning("HTTP GET \(Self.logPath(for: url)) unexpectedStatus=\(status)")
+            self.logger.warning("HTTP \(method) \(Self.logPath(for: url)) unexpectedStatus=\(status)")
             await self.diag.message("Unexpected status \(status) for \(url.lastPathComponent)")
             throw GitHubAPIError.badStatus(
                 code: status,

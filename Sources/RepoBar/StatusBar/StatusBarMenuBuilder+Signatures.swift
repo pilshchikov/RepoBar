@@ -339,9 +339,32 @@ struct RepoSignature: Hashable {
     }
 }
 
-struct RepoSubmenuCacheEntry {
+/// Per-repo submenu cache. Holds the persistent `NSMenu` instance plus a row-keyed item
+/// cache so that subsequent rebuilds can mutate the existing menu in place rather than
+/// allocating a new `NSMenu` (which AppKit treats as a detach+reattach and closes any
+/// open submenu).
+@MainActor
+final class RepoSubmenuCacheEntry {
     let menu: NSMenu
-    let signature: RepoSubmenuSignature
+    var signature: RepoSubmenuSignature
+    var itemCache: [RepoSubmenuRowKey: NSMenuItem] = [:]
+
+    init(menu: NSMenu, signature: RepoSubmenuSignature) {
+        self.menu = menu
+        self.signature = signature
+    }
+}
+
+enum RepoSubmenuRowKey: Hashable {
+    case itemID(RepoSubmenuItemID)
+    case groupSeparator(RepoSubmenuItemGroup, RepoSubmenuItemGroup)
+    case commitsOpenAction
+    case commitsInfo
+    case commitItem(sha: String)
+    case moreCommits
+    case activityOpenAction
+    case activityItem(eventID: String)
+    case moreActivity
 }
 
 struct RepoRecentCountSignature: Hashable {

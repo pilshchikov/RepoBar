@@ -154,8 +154,10 @@ public struct RepoReleaseSummary: Sendable, Hashable {
 }
 
 public struct RepoWorkflowRunSummary: Sendable, Hashable {
+    public let id: Int?
     public let name: String
     public let url: URL
+    public let createdAt: Date?
     public let updatedAt: Date
     public let status: CIStatus
     public let conclusion: String?
@@ -166,8 +168,10 @@ public struct RepoWorkflowRunSummary: Sendable, Hashable {
     public let runNumber: Int?
 
     public init(
+        id: Int? = nil,
         name: String,
         url: URL,
+        createdAt: Date? = nil,
         updatedAt: Date,
         status: CIStatus,
         conclusion: String?,
@@ -177,8 +181,10 @@ public struct RepoWorkflowRunSummary: Sendable, Hashable {
         actorAvatarURL: URL?,
         runNumber: Int?
     ) {
+        self.id = id
         self.name = name
         self.url = url
+        self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.status = status
         self.conclusion = conclusion
@@ -187,6 +193,59 @@ public struct RepoWorkflowRunSummary: Sendable, Hashable {
         self.actorLogin = actorLogin
         self.actorAvatarURL = actorAvatarURL
         self.runNumber = runNumber
+    }
+}
+
+public struct RepoWorkflowSummary: Sendable, Hashable {
+    public let id: Int
+    public let name: String
+    public let path: String
+    public let state: String?
+    public let url: URL?
+    public let updatedAt: Date?
+    public let inputs: [RepoWorkflowDispatchInput]
+
+    public init(
+        id: Int,
+        name: String,
+        path: String,
+        state: String?,
+        url: URL?,
+        updatedAt: Date?,
+        inputs: [RepoWorkflowDispatchInput]
+    ) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.state = state
+        self.url = url
+        self.updatedAt = updatedAt
+        self.inputs = inputs
+    }
+}
+
+public struct RepoWorkflowDispatchInput: Sendable, Hashable {
+    public let name: String
+    public let description: String?
+    public let isRequired: Bool
+    public let defaultValue: String?
+    public let type: String?
+    public let options: [String]
+
+    public init(
+        name: String,
+        description: String?,
+        isRequired: Bool,
+        defaultValue: String?,
+        type: String?,
+        options: [String]
+    ) {
+        self.name = name
+        self.description = description
+        self.isRequired = isRequired
+        self.defaultValue = defaultValue
+        self.type = type
+        self.options = options
     }
 }
 

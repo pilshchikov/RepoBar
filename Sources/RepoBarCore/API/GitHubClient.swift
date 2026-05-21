@@ -473,6 +473,28 @@ public actor GitHubClient {
         try await self.restAPI.recentWorkflowRuns(owner: owner, name: name, limit: limit)
     }
 
+    public func dispatchableWorkflows(owner: String, name: String, limit: Int = 50) async throws -> [RepoWorkflowSummary] {
+        try await self.restAPI.dispatchableWorkflows(owner: owner, name: name, limit: limit)
+    }
+
+    public func recentWorkflowRuns(
+        owner: String,
+        name: String,
+        workflowID: Int,
+        branch: String? = nil,
+        limit: Int = 10
+    ) async throws -> [RepoWorkflowRunSummary] {
+        try await self.restAPI.recentWorkflowRuns(owner: owner, name: name, workflowID: workflowID, branch: branch, limit: limit)
+    }
+
+    public func recentBranchesByCommitDate(owner: String, name: String, limit: Int = 10) async throws -> [RepoBranchSummary] {
+        try await self.restAPI.recentBranchesByCommitDate(owner: owner, name: name, limit: limit)
+    }
+
+    public func dispatchWorkflow(owner: String, name: String, workflowID: Int, ref: String, inputs: [String: String]) async throws {
+        try await self.restAPI.dispatchWorkflow(owner: owner, name: name, workflowID: workflowID, ref: ref, inputs: inputs)
+    }
+
     public func recentCommits(owner: String, name: String, limit: Int = 20) async throws -> RepoCommitList {
         try await self.restAPI.recentCommits(owner: owner, name: name, limit: limit)
     }

@@ -115,8 +115,10 @@ enum GitHubRecentDecoders {
             let title = self.workflowRunTitle(run)
             let updatedAt = run.updatedAt ?? run.createdAt ?? Date.distantPast
             return RepoWorkflowRunSummary(
+                id: run.id,
                 name: title,
                 url: url,
+                createdAt: run.createdAt,
                 updatedAt: updatedAt,
                 status: GitHubStatusMapper.ciStatus(fromStatus: run.status, conclusion: run.conclusion),
                 conclusion: run.conclusion,

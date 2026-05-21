@@ -64,6 +64,10 @@ extension StatusBarMenuManager {
         self.recentMenuService.cachedCommitDigest(fullName: fullName)
     }
 
+    func cachedRecentListCount(fullName: String, kind: RepoRecentMenuKind) -> Int? {
+        self.recentMenuService.cachedRecentListCount(fullName: fullName, kind: kind)
+    }
+
     @objc func openContributors(_ sender: NSMenuItem) {
         self.openRepoPath(sender: sender, path: "graphs/contributors")
     }
@@ -90,6 +94,89 @@ extension StatusBarMenuManager {
         guard let url = sender.representedObject as? URL else { return }
 
         self.open(url: url)
+    }
+
+    @objc func selectWorkflowBranch(_ sender: NSMenuItem) {
+        guard let command = sender.representedObject as? WorkflowBranchSelectionCommand else { return }
+
+        command.state.selectedBranch = command.branchName
+        self.recentListCoordinator.refreshWorkflowMenu(for: command.state)
+    }
+
+    @objc func chooseWorkflowInputValue(_ sender: NSMenuItem) {
+        guard let command = sender.representedObject as? WorkflowInputChoiceCommand else { return }
+
+        command.state.inputValues[command.inputName] = command.value
+        self.recentListCoordinator.refreshWorkflowMenu(for: command.state)
+    }
+
+    @objc func editWorkflowInput(_ sender: NSMenuItem) {
+        guard let command = sender.representedObject as? WorkflowInputEditCommand else { return }
+
+        let alert = NSAlert()
+        alert.messageText = command.input.name
+        alert.informativeText = command.input.description ?? "Set workflow input value."
+        alert.addButton(withTitle: "Set")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.stringValue = command.state.value(for: command.input)
+        alert.accessoryView = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        command.state.inputValues[command.input.name] = field.stringValue
+        self.recentListCoordinator.refreshWorkflowMenu(for: command.state)
+    }
+
+    @objc func runWorkflowDispatch(_ sender: NSMenuItem) {
+        guard let command = sender.representedObject as? WorkflowRunCommand else { return }
+
+        let state = command.state
+        guard state.canRun, let branch = state.selectedBranch else {
+            self.presentAlert(
+                title: "Cannot run workflow",
+                message: "Choose a branch and fill required inputs first."
+            )
+            return
+        }
+        guard let (owner, name) = self.recentListCoordinator.ownerAndName(from: state.fullName) else {
+            self.presentAlert(title: "Cannot run workflow", message: "Invalid repository name.")
+            return
+        }
+
+        let workflowName = state.workflow.name
+        let workflowID = state.workflow.id
+        let inputs = state.dispatchInputs
+        let startedAt = Date()
+
+        Task { @MainActor in
+            do {
+                try await self.appState.github.dispatchWorkflow(
+                    owner: owner,
+                    name: name,
+                    workflowID: workflowID,
+                    ref: branch,
+                    inputs: inputs
+                )
+                await WorkflowRunNotifier.shared.notify(
+                    title: "Workflow started",
+                    body: "\(workflowName) on \(state.fullName) (\(branch))"
+                )
+                await WorkflowRunNotifier.shared.monitor(
+                    github: self.appState.github,
+                    owner: owner,
+                    name: name,
+                    repoFullName: state.fullName,
+                    workflowID: workflowID,
+                    workflowName: workflowName,
+                    branch: branch,
+                    startedAt: startedAt
+                )
+            } catch {
+                self.presentAlert(title: "Workflow dispatch failed", message: error.userFacingMessage)
+            }
+        }
     }
 
     @objc func openLocalFinder(_ sender: NSMenuItem) {

@@ -118,6 +118,34 @@ struct ActionsRunsResponse: Decodable {
     }
 }
 
+struct ActionsWorkflowsResponse: Decodable {
+    let totalCount: Int?
+    let workflows: [Workflow]
+
+    enum CodingKeys: String, CodingKey {
+        case totalCount = "total_count"
+        case workflows
+    }
+
+    struct Workflow: Decodable {
+        let id: Int
+        let name: String
+        let path: String
+        let state: String?
+        let htmlUrl: URL?
+        let updatedAt: Date?
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case name
+            case path
+            case state
+            case htmlUrl = "html_url"
+            case updatedAt = "updated_at"
+        }
+    }
+}
+
 struct CommentResponse: Decodable {
     let body: String
     let user: CommentUser

@@ -11,55 +11,139 @@ extension RecentListMenuCoordinator {
         extras: [NSMenuItem] = [],
         content: ListMenuContent
     ) {
-        menu.removeAllItems()
+        // Resolve the per-menu cache if this menu was registered as a recent-list menu.
+        // Unregistered menus (e.g. release-asset menus that are populated once) still go
+        // through the reconciler with a transient empty cache — the algorithm degenerates
+        // to remove-then-insert in that case, which is exactly the prior behaviour.
+        let entry = self.recentListMenus[ObjectIdentifier(menu)]
+        var transientCache: [ListMenuRowKey: NSMenuItem] = [:]
+        var usedKeys: Set<ListMenuRowKey> = []
 
-        menu.addItem(self.makeListItem(
-            title: header.title,
-            action: header.action,
-            representedObject: header.representedObject,
-            systemImage: header.systemImage,
-            isEnabled: header.action != nil
-        ))
-
-        for action in actions {
-            menu.addItem(self.makeListItem(
-                title: action.title,
-                action: action.action,
-                representedObject: action.representedObject,
-                systemImage: action.systemImage,
-                isEnabled: action.isEnabled
-            ))
+        let read: (ListMenuRowKey) -> NSMenuItem? = { key in
+            entry?.itemCache[key] ?? transientCache[key]
+        }
+        let write: (ListMenuRowKey, NSMenuItem) -> Void = { key, item in
+            if let entry { entry.itemCache[key] = item } else { transientCache[key] = item }
+        }
+        let cached: (ListMenuRowKey, () -> NSMenuItem, ((NSMenuItem) -> Void)?) -> NSMenuItem = { key, build, update in
+            usedKeys.insert(key)
+            if let existing = read(key) {
+                update?(existing)
+                return existing
+            }
+            let made = build()
+            write(key, made)
+            return made
         }
 
-        menu.addItem(.separator())
-        for extra in extras {
-            menu.addItem(extra)
+        var items: [NSMenuItem] = []
+
+        items.append(cached(.header, {
+            self.makeListItem(
+                title: header.title,
+                action: header.action,
+                representedObject: header.representedObject,
+                systemImage: header.systemImage,
+                isEnabled: header.action != nil
+            )
+        }, { item in
+            item.title = header.title
+            item.action = header.action
+            item.representedObject = header.representedObject
+            item.isEnabled = header.action != nil
+            if let systemImage = header.systemImage {
+                self.applyMenuItemSymbol(systemImage, to: item)
+            } else {
+                item.image = nil
+            }
+        }))
+
+        for (index, action) in actions.enumerated() {
+            items.append(cached(.action(index), {
+                self.makeListItem(
+                    title: action.title,
+                    action: action.action,
+                    representedObject: action.representedObject,
+                    systemImage: action.systemImage,
+                    isEnabled: action.isEnabled
+                )
+            }, { item in
+                item.title = action.title
+                item.action = action.action
+                item.representedObject = action.representedObject
+                item.isEnabled = action.isEnabled
+                if let systemImage = action.systemImage {
+                    self.applyMenuItemSymbol(systemImage, to: item)
+                }
+            }))
+        }
+
+        items.append(cached(.headerSeparator, { .separator() }, nil))
+
+        // Extras are a heterogeneous bag (filter chips, rate-limit warnings, separators).
+        // The producers create a fresh NSMenuItem each call, but the SwiftUI-hosted ones
+        // (filter chips) are reactive — bound to @Observable state — so swapping the
+        // wrapping NSMenuItem instance discards no information and only causes AppKit to
+        // close the menu when the user is mid-click on it. Reuse cached instances when
+        // they are structurally interchangeable with the fresh one.
+        for (index, extra) in extras.enumerated() {
+            let key = ListMenuRowKey.extra(index)
+            usedKeys.insert(key)
+            if let existing = read(key), Self.canReuseExtra(existing: existing, fresh: extra) {
+                items.append(existing)
+            } else {
+                write(key, extra)
+                items.append(extra)
+            }
         }
 
         switch content {
         case let .message(text):
-            menu.addItem(self.makeListItem(
-                title: text,
-                action: nil,
-                representedObject: nil,
-                systemImage: nil,
-                isEnabled: false
-            ))
+            items.append(cached(.messageRow, {
+                self.makeListItem(
+                    title: text,
+                    action: nil,
+                    representedObject: nil,
+                    systemImage: nil,
+                    isEnabled: false
+                )
+            }, { $0.title = text }))
         case let .items(isEmpty, emptyTitle, render):
             if isEmpty {
                 if let emptyTitle {
-                    menu.addItem(self.makeListItem(
-                        title: emptyTitle,
-                        action: nil,
-                        representedObject: nil,
-                        systemImage: nil,
-                        isEnabled: false
-                    ))
+                    items.append(cached(.messageRow, {
+                        self.makeListItem(
+                            title: emptyTitle,
+                            action: nil,
+                            representedObject: nil,
+                            systemImage: nil,
+                            isEnabled: false
+                        )
+                    }, { $0.title = emptyTitle }))
                 }
             } else {
-                render(menu)
+                // Rendered items pass through a buffer NSMenu so the existing
+                // addXxxMenuItem(_:to:) helpers keep working without rewrites.
+                // Item identity is fresh per render — preserves no individual hover state
+                // for issue/PR rows, but the parent submenu instance is preserved which
+                // is what stops AppKit from closing it.
+                let buffer = NSMenu()
+                render(buffer)
+                for (index, rendered) in buffer.items.enumerated() {
+                    let key = ListMenuRowKey.rendered(index)
+                    usedKeys.insert(key)
+                    write(key, rendered)
+                    items.append(rendered)
+                }
+                buffer.removeAllItems()
             }
         }
+
+        // Prune stale cache entries so old rendered items don't leak across refreshes.
+        if let entry {
+            entry.itemCache = entry.itemCache.filter { usedKeys.contains($0.key) }
+        }
+        menu.reconcile(with: items)
 
         if menu.items.contains(where: { $0.view != nil }) {
             self.menuBuilder.refreshMenuViewHeights(in: menu)
@@ -103,6 +187,17 @@ extension RecentListMenuCoordinator {
         }
 
         self.populateListMenu(menu, header: listHeader, actions: listActions, extras: extras, content: listContent)
+    }
+
+    /// Decide whether the cached extras NSMenuItem can stand in for the freshly built one.
+    /// Both separators and SwiftUI-hosted rows are interchangeable — the SwiftUI views are
+    /// reactive against the same Session/AppState so the cached one already shows current
+    /// state. Plain-text rows (rate-limit warnings) are NOT reusable: the message text is
+    /// part of the NSMenuItem's title, so the new instance carries new content.
+    private static func canReuseExtra(existing: NSMenuItem, fresh: NSMenuItem) -> Bool {
+        if existing.isSeparatorItem, fresh.isSeparatorItem { return true }
+        if existing.view != nil, fresh.view != nil { return true }
+        return false
     }
 
     func makeListItem(
@@ -292,6 +387,28 @@ extension RecentListMenuCoordinator {
         menu.addItem(item)
     }
 
+    func addWorkflowMenuItem(_ workflow: RepoWorkflowSummary, repoFullName: String, to menu: NSMenu) {
+        let submenu = NSMenu(title: workflow.name)
+        submenu.autoenablesItems = false
+        submenu.delegate = self.actionHandler
+
+        let state = self.workflowState(repoFullName: repoFullName, workflow: workflow)
+        state.menu = submenu
+        self.workflowMenus[ObjectIdentifier(submenu)] = WorkflowMenuEntry(menu: submenu, state: state)
+        self.populateWorkflowMenuLoading(submenu, state: state)
+
+        let item = self.makeListItem(
+            title: workflow.name,
+            action: #selector(StatusBarMenuManager.menuItemNoOp(_:)),
+            representedObject: repoFullName,
+            systemImage: "play.rectangle",
+            isEnabled: true
+        )
+        item.submenu = submenu
+        item.toolTip = workflow.path
+        menu.addItem(item)
+    }
+
     func addDiscussionMenuItem(_ summary: RepoDiscussionSummary, to menu: NSMenu) {
         let view = DiscussionMenuItemView(summary: summary) { [weak self] in
             self?.actionHandler.open(url: summary.url)
@@ -416,9 +533,20 @@ extension RecentListMenuCoordinator {
     }
 }
 
+enum ListMenuRowKey: Hashable {
+    case header
+    case action(Int)
+    case headerSeparator
+    case extra(Int)
+    case messageRow
+    case rendered(Int)
+}
+
+@MainActor
 final class RecentListMenuEntry {
     weak var menu: NSMenu?
     let context: RepoRecentMenuContext
+    var itemCache: [ListMenuRowKey: NSMenuItem] = [:]
 
     init(menu: NSMenu, context: RepoRecentMenuContext) {
         self.menu = menu

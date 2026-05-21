@@ -3,6 +3,18 @@ import OSLog
 import RepoBarCore
 import SwiftUI
 
+/// Stable identity for each row produced by the main-menu builder. Used by
+/// `mainMenuItemCache` so that successive `populateMainMenu` calls hand the reconciler
+/// the *same* `NSMenuItem` instance for rows that haven't structurally changed,
+/// preserving any open submenu attached to that item.
+enum MainMenuRowKey: Hashable {
+    case fixed(MainMenuItemID)
+    case repoCard(String)
+    case repoSeparator(String)
+    case groupSeparator(MainMenuItemGroup, MainMenuItemGroup)
+    case footerSeparator(MainMenuItemGroup, MainMenuItemGroup)
+}
+
 @MainActor
 final class StatusBarMenuBuilder {
     private static let menuFixedWidth: CGFloat = 360
@@ -13,6 +25,7 @@ final class StatusBarMenuBuilder {
     var repoMenuItemCache: [String: NSMenuItem] = [:]
     var repoSubmenuCache: [String: RepoSubmenuCacheEntry] = [:]
     var systemImageCache: [String: NSImage] = [:]
+    var mainMenuItemCache: [MainMenuRowKey: NSMenuItem] = [:]
     let menuItemFactory = MenuItemViewFactory()
 
     init(appState: AppState, target: StatusBarMenuManager) {
@@ -64,12 +77,32 @@ final class StatusBarMenuBuilder {
     func populateMainMenu(_ menu: NSMenu, repos: [RepositoryDisplayModel]) {
         let signpost = self.signposter.beginInterval("populateMainMenu")
         defer { self.signposter.endInterval("populateMainMenu", signpost) }
-        menu.removeAllItems()
         let session = self.appState.session
         let settings = session.settings
         let customization = settings.menuCustomization.normalized()
-        let blocks = self.mainMenuBlocks(repos: repos, settings: settings, customization: customization)
-        self.flattenMainMenuBlocks(blocks).forEach { menu.addItem($0) }
+        var usedKeys: Set<MainMenuRowKey> = []
+        let blocks = self.mainMenuBlocks(repos: repos, settings: settings, customization: customization, usedKeys: &usedKeys)
+        let newItems = self.flattenMainMenuBlocks(blocks, usedKeys: &usedKeys)
+        self.mainMenuItemCache = self.mainMenuItemCache.filter { usedKeys.contains($0.key) }
+        menu.reconcile(with: newItems)
+    }
+
+    /// Look up a cached row for `key`, optionally refreshing its contents via `update`.
+    /// If no cached row exists, `build` is called to produce one and the cache is populated.
+    func cachedMainMenuItem(
+        _ key: MainMenuRowKey,
+        usedKeys: inout Set<MainMenuRowKey>,
+        build: () -> NSMenuItem,
+        update: ((NSMenuItem) -> Void)? = nil
+    ) -> NSMenuItem {
+        usedKeys.insert(key)
+        if let cached = self.mainMenuItemCache[key] {
+            update?(cached)
+            return cached
+        }
+        let item = build()
+        self.mainMenuItemCache[key] = item
+        return item
     }
 
     private struct MainMenuBlock {
@@ -80,13 +113,20 @@ final class StatusBarMenuBuilder {
     private func mainMenuBlocks(
         repos: [RepositoryDisplayModel],
         settings: UserSettings,
-        customization: MenuCustomization
+        customization: MenuCustomization,
+        usedKeys: inout Set<MainMenuRowKey>
     ) -> [MainMenuBlock] {
         let session = self.appState.session
         var blocks: [MainMenuBlock] = []
         for itemID in customization.mainMenuOrder {
             if customization.hiddenMainMenuItems.contains(itemID), !itemID.isRequired { continue }
-            let items = self.mainMenuItems(for: itemID, repos: repos, settings: settings, session: session)
+            let items = self.mainMenuItems(
+                for: itemID,
+                repos: repos,
+                settings: settings,
+                session: session,
+                usedKeys: &usedKeys
+            )
             if items.isEmpty { continue }
             blocks.append(MainMenuBlock(group: itemID.group, items: items))
         }
@@ -97,7 +137,8 @@ final class StatusBarMenuBuilder {
         for itemID: MainMenuItemID,
         repos: [RepositoryDisplayModel],
         settings: UserSettings,
-        session: Session
+        session: Session,
+        usedKeys: inout Set<MainMenuRowKey>
     ) -> [NSMenuItem] {
         switch itemID {
         case .loggedOutPrompt:
@@ -106,18 +147,44 @@ final class StatusBarMenuBuilder {
                 let loggedOut = MenuLoggedOutView()
                     .padding(.horizontal, MenuStyle.sectionHorizontalPadding)
                     .padding(.vertical, MenuStyle.sectionVerticalPadding)
-                return [self.viewItem(for: loggedOut, enabled: false)]
+                let item = self.cachedMainMenuItem(
+                    .fixed(.loggedOutPrompt),
+                    usedKeys: &usedKeys,
+                    build: { self.viewItem(for: loggedOut, enabled: false) },
+                    update: { self.menuItemFactory.updateItem($0, with: loggedOut, highlightable: false) }
+                )
+                return [item]
             case .loggedIn:
                 return []
             }
         case .signInAction:
             switch session.account {
             case .loggedOut:
-                return [self.actionItem(title: "Sign in to GitHub", action: #selector(self.target.signIn))]
+                let item = self.cachedMainMenuItem(
+                    .fixed(.signInAction),
+                    usedKeys: &usedKeys,
+                    build: { self.actionItem(title: "Sign in to GitHub", action: #selector(self.target.signIn)) },
+                    update: { item in
+                        item.title = "Sign in to GitHub"
+                        item.isEnabled = true
+                    }
+                )
+                return [item]
             case .loggingIn:
-                let signInItem = self.actionItem(title: "Signing in…", action: #selector(self.target.signIn))
-                signInItem.isEnabled = false
-                return [signInItem]
+                let item = self.cachedMainMenuItem(
+                    .fixed(.signInAction),
+                    usedKeys: &usedKeys,
+                    build: {
+                        let made = self.actionItem(title: "Signing in…", action: #selector(self.target.signIn))
+                        made.isEnabled = false
+                        return made
+                    },
+                    update: { item in
+                        item.title = "Signing in…"
+                        item.isEnabled = false
+                    }
+                )
+                return [item]
             case .loggedIn:
                 return []
             }
@@ -141,7 +208,16 @@ final class StatusBarMenuBuilder {
             .padding(.top, MenuStyle.headerTopPadding)
             .padding(.bottom, MenuStyle.headerBottomPadding)
             let submenu = self.contributionSubmenu(username: username, displayName: displayName)
-            return [self.viewItem(for: header, enabled: true, submenu: submenu)]
+            let item = self.cachedMainMenuItem(
+                .fixed(.contributionHeader),
+                usedKeys: &usedKeys,
+                build: { self.viewItem(for: header, enabled: true, submenu: submenu) },
+                update: { item in
+                    self.menuItemFactory.updateItem(item, with: header, highlightable: false)
+                    if item.submenu !== submenu { item.submenu = submenu }
+                }
+            )
+            return [item]
         case .statusBanner:
             guard case .loggedIn = session.account else { return [] }
 
@@ -149,23 +225,58 @@ final class StatusBarMenuBuilder {
                 let banner = RateLimitBanner(reset: reset)
                     .padding(.horizontal, MenuStyle.bannerHorizontalPadding)
                     .padding(.vertical, MenuStyle.bannerVerticalPadding)
-                return [self.viewItem(for: banner, enabled: false)]
+                let item = self.cachedMainMenuItem(
+                    .fixed(.statusBanner),
+                    usedKeys: &usedKeys,
+                    build: { self.viewItem(for: banner, enabled: false) },
+                    update: { self.menuItemFactory.updateItem($0, with: banner, highlightable: false) }
+                )
+                return [item]
             }
             if let error = session.lastError {
                 let banner = ErrorBanner(message: error)
                     .padding(.horizontal, MenuStyle.bannerHorizontalPadding)
                     .padding(.vertical, MenuStyle.bannerVerticalPadding)
-                return [self.viewItem(for: banner, enabled: false)]
+                let item = self.cachedMainMenuItem(
+                    .fixed(.statusBanner),
+                    usedKeys: &usedKeys,
+                    build: { self.viewItem(for: banner, enabled: false) },
+                    update: { self.menuItemFactory.updateItem($0, with: banner, highlightable: false) }
+                )
+                return [item]
             }
             return []
         case .rateLimits:
             guard case .loggedIn = session.account else { return [] }
 
-            return [self.rateLimitsStatusMenuItem()]
+            usedKeys.insert(.fixed(.rateLimits))
+            // Rate-limits row needs a fresh build each time because its submenu also changes.
+            // Reuse the cached NSMenuItem container to preserve identity for the reconciler.
+            let fresh = self.rateLimitsStatusMenuItem()
+            if let cached = self.mainMenuItemCache[.fixed(.rateLimits)] {
+                cached.view = fresh.view
+                cached.submenu = fresh.submenu
+                cached.target = fresh.target
+                cached.action = fresh.action
+                return [cached]
+            }
+            self.mainMenuItemCache[.fixed(.rateLimits)] = fresh
+            return [fresh]
         case .actionsLimits:
             guard case .loggedIn = session.account else { return [] }
 
-            return [self.actionsLimitsStatusMenuItem()]
+            return [self.cachedMainMenuItem(
+                .fixed(.actionsLimits),
+                usedKeys: &usedKeys,
+                build: { self.actionsLimitsStatusMenuItem() },
+                update: { cached in
+                    let fresh = self.actionsLimitsStatusMenuItem()
+                    cached.view = fresh.view
+                    cached.submenu = fresh.submenu
+                    cached.target = fresh.target
+                    cached.action = fresh.action
+                }
+            )]
         case .filters:
             let isLoggedIn = session.account.isLoggedIn
             let hasLocalFolder = session.settings.localProjects.rootPath?.isEmpty == false
@@ -176,7 +287,13 @@ final class StatusBarMenuBuilder {
             let filters = MenuRepoFiltersView(session: session)
                 .padding(.horizontal, 0)
                 .padding(.vertical, 0)
-            return [self.viewItem(for: filters, enabled: true)]
+            let item = self.cachedMainMenuItem(
+                .fixed(.filters),
+                usedKeys: &usedKeys,
+                build: { self.viewItem(for: filters, enabled: true) },
+                update: { self.menuItemFactory.updateItem($0, with: filters, highlightable: false) }
+            )
+            return [item]
         case .repoList:
             let isLoggedIn = session.account.isLoggedIn
             let isLocalScope = session.menuRepoSelection.isLocalScope
@@ -188,14 +305,26 @@ final class StatusBarMenuBuilder {
                 let loading = MenuLoadingRowView()
                     .padding(.horizontal, MenuStyle.sectionHorizontalPadding)
                     .padding(.vertical, MenuStyle.sectionVerticalPadding)
-                return [self.viewItem(for: loading, enabled: false)]
+                let item = self.cachedMainMenuItem(
+                    .fixed(.repoList),
+                    usedKeys: &usedKeys,
+                    build: { self.viewItem(for: loading, enabled: false) },
+                    update: { self.menuItemFactory.updateItem($0, with: loading, highlightable: false) }
+                )
+                return [item]
             }
             if uniqueRepos.isEmpty {
                 let (title, subtitle) = self.emptyStateMessage(for: session)
                 let emptyState = MenuEmptyStateView(title: title, subtitle: subtitle)
                     .padding(.horizontal, MenuStyle.sectionHorizontalPadding)
                     .padding(.vertical, MenuStyle.sectionVerticalPadding)
-                return [self.viewItem(for: emptyState, enabled: false)]
+                let item = self.cachedMainMenuItem(
+                    .fixed(.repoList),
+                    usedKeys: &usedKeys,
+                    build: { self.viewItem(for: emptyState, enabled: false) },
+                    update: { self.menuItemFactory.updateItem($0, with: emptyState, highlightable: false) }
+                )
+                return [item]
             }
             var items: [NSMenuItem] = []
             var usedRepoKeys: Set<String> = []
@@ -207,8 +336,15 @@ final class StatusBarMenuBuilder {
                 let item = self.repoMenuItem(for: repo, isPinned: isPinned)
                 item.representedObject = repo.title
                 items.append(item)
+                usedKeys.insert(.repoCard(repo.id))
                 if index < uniqueRepos.count - 1 {
-                    items.append(self.repoCardSeparator())
+                    let sepKey = MainMenuRowKey.repoSeparator(repo.id)
+                    let sep = self.cachedMainMenuItem(
+                        sepKey,
+                        usedKeys: &usedKeys,
+                        build: { self.repoCardSeparator() }
+                    )
+                    items.append(sep)
                 }
                 usedRepoKeys.insert(repo.id)
             }
@@ -225,16 +361,36 @@ final class StatusBarMenuBuilder {
                 systemImage: "rectangle.and.text.magnifyingglass"
             )]
         case .preferences:
-            return [self.actionItem(title: "Preferences…", action: #selector(self.target.openPreferences), keyEquivalent: ",")]
+            let item = self.cachedMainMenuItem(
+                .fixed(.preferences),
+                usedKeys: &usedKeys,
+                build: { self.actionItem(title: "Preferences…", action: #selector(self.target.openPreferences), keyEquivalent: ",") }
+            )
+            return [item]
         case .about:
-            return [self.actionItem(title: "About RepoBar", action: #selector(self.target.openAbout))]
+            let item = self.cachedMainMenuItem(
+                .fixed(.about),
+                usedKeys: &usedKeys,
+                build: { self.actionItem(title: "About RepoBar", action: #selector(self.target.openAbout)) }
+            )
+            return [item]
         case .restartToUpdate:
             guard case .loggedIn = session.account else { return [] }
             guard SparkleController.shared.updateStatus.isUpdateReady else { return [] }
 
-            return [self.actionItem(title: "Restart to update", action: #selector(self.target.checkForUpdates))]
+            let item = self.cachedMainMenuItem(
+                .fixed(.restartToUpdate),
+                usedKeys: &usedKeys,
+                build: { self.actionItem(title: "Restart to update", action: #selector(self.target.checkForUpdates)) }
+            )
+            return [item]
         case .quit:
-            return [self.actionItem(title: "Quit RepoBar", action: #selector(self.target.quitApp), keyEquivalent: "q")]
+            let item = self.cachedMainMenuItem(
+                .fixed(.quit),
+                usedKeys: &usedKeys,
+                build: { self.actionItem(title: "Quit RepoBar", action: #selector(self.target.quitApp), keyEquivalent: "q") }
+            )
+            return [item]
         }
     }
 
@@ -245,15 +401,23 @@ final class StatusBarMenuBuilder {
         }
     }
 
-    private func flattenMainMenuBlocks(_ blocks: [MainMenuBlock]) -> [NSMenuItem] {
+    private func flattenMainMenuBlocks(
+        _ blocks: [MainMenuBlock],
+        usedKeys: inout Set<MainMenuRowKey>
+    ) -> [NSMenuItem] {
         var items: [NSMenuItem] = []
         var lastGroup: MainMenuItemGroup?
         for block in blocks {
             guard block.items.isEmpty == false else { continue }
 
             if let lastGroup, lastGroup != block.group, items.isEmpty == false {
-                let separator: NSMenuItem = block.group == .footer ? self.paddedSeparator() : .separator()
-                items.append(separator)
+                if block.group == .footer {
+                    let key = MainMenuRowKey.footerSeparator(lastGroup, block.group)
+                    items.append(self.cachedMainMenuItem(key, usedKeys: &usedKeys, build: { self.paddedSeparator() }))
+                } else {
+                    let key = MainMenuRowKey.groupSeparator(lastGroup, block.group)
+                    items.append(self.cachedMainMenuItem(key, usedKeys: &usedKeys, build: { .separator() }))
+                }
             }
             items.append(contentsOf: block.items)
             lastGroup = block.group

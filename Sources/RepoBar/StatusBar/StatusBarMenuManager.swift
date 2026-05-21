@@ -19,7 +19,7 @@ final class StatusBarMenuManager: NSObject, NSMenuDelegate {
     private lazy var menuBuilder = StatusBarMenuBuilder(appState: self.appState, target: self)
     private let menuItemFactory = MenuItemViewFactory()
     lazy var recentMenuService = RecentMenuService(github: self.appState.github)
-    private lazy var recentListCoordinator = RecentListMenuCoordinator(
+    lazy var recentListCoordinator = RecentListMenuCoordinator(
         appState: self.appState,
         menuBuilder: self.menuBuilder,
         menuItemFactory: self.menuItemFactory,
@@ -432,7 +432,8 @@ final class StatusBarMenuManager: NSObject, NSMenuDelegate {
                 Task { await self.appState.loadContributionHeatmapIfNeeded(for: user.username) }
             }
         }
-        self.appState.refreshIfNeededForMenu()
+        // No on-open refresh: RefreshScheduler owns network refresh cadence. Opening the
+        // menu only renders the latest snapshot, which keeps active submenus stable.
         let isMenuTooSmall = menu.items.count < Self.minimumMainMenuItems
         if isMenuTooSmall {
             self.logMenuEvent("menuWillOpen mainMenu invalidating cache: items=\(menu.items.count)")

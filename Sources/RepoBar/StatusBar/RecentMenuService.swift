@@ -12,7 +12,7 @@ final class RecentMenuService {
     private let recentIssuesCache = RecentListCache<RepoIssueSummary>()
     private let recentPullRequestsCache = RecentListCache<RepoPullRequestSummary>()
     private let recentReleasesCache = RecentListCache<RepoReleaseSummary>()
-    private let recentWorkflowRunsCache = RecentListCache<RepoWorkflowRunSummary>()
+    private let recentWorkflowsCache = RecentListCache<RepoWorkflowSummary>()
     private let recentCommitsCache = RecentListCache<RepoCommitSummary>()
     private let recentDiscussionsCache = RecentListCache<RepoDiscussionSummary>()
     private let recentTagsCache = RecentListCache<RepoTagSummary>()
@@ -92,15 +92,15 @@ final class RecentMenuService {
                 kind: .ciRuns,
                 headerTitle: "Open Actions",
                 headerIcon: "bolt",
-                emptyTitle: "No CI runs",
-                cache: self.recentWorkflowRunsCache,
-                wrap: RecentMenuItems.workflowRuns,
+                emptyTitle: "No dispatchable workflows",
+                cache: self.recentWorkflowsCache,
+                wrap: RecentMenuItems.workflows,
                 unwrap: { boxed in
-                    if case let .workflowRuns(items) = boxed { return items }
+                    if case let .workflows(items) = boxed { return items }
                     return nil
                 },
                 fetch: { github, owner, name, limit in
-                    try await github.recentWorkflowRuns(owner: owner, name: name, limit: limit)
+                    try await github.dispatchableWorkflows(owner: owner, name: name, limit: max(limit, 50))
                 }
             )),
             self.makeDescriptor(RecentMenuDescriptorConfig(
@@ -171,6 +171,12 @@ final class RecentMenuService {
     func cachedRecentCommitCount(fullName: String) -> Int? {
         if let total = self.recentCommitCounts[fullName] { return total }
         return self.recentCommitsCache.stale(for: fullName)?.count
+    }
+
+    func cachedRecentListCount(fullName: String, kind: RepoRecentMenuKind) -> Int? {
+        guard let descriptor = self.descriptor(for: kind) else { return nil }
+
+        return descriptor.stale(fullName)?.count
     }
 
     func cachedCommits(fullName: String, now: Date = Date()) -> [RepoCommitSummary]? {
@@ -283,6 +289,7 @@ enum RecentMenuItems {
     case issues([RepoIssueSummary])
     case pullRequests([RepoPullRequestSummary])
     case releases([RepoReleaseSummary])
+    case workflows([RepoWorkflowSummary])
     case workflowRuns([RepoWorkflowRunSummary])
     case discussions([RepoDiscussionSummary])
     case tags([RepoTagSummary])
@@ -295,6 +302,7 @@ enum RecentMenuItems {
         case let .issues(items): items.isEmpty
         case let .pullRequests(items): items.isEmpty
         case let .releases(items): items.isEmpty
+        case let .workflows(items): items.isEmpty
         case let .workflowRuns(items): items.isEmpty
         case let .discussions(items): items.isEmpty
         case let .tags(items): items.isEmpty
@@ -309,6 +317,7 @@ enum RecentMenuItems {
         case let .issues(items): items.count
         case let .pullRequests(items): items.count
         case let .releases(items): items.count
+        case let .workflows(items): items.count
         case let .workflowRuns(items): items.count
         case let .discussions(items): items.count
         case let .tags(items): items.count

@@ -25,11 +25,17 @@ extension StatusBarMenuBuilder {
         )
         let submenu = self.repoSubmenu(for: repo, isPinned: isPinned)
         if let cached = self.repoMenuItemCache[repo.id] {
-            // Remove from current menu if attached (prevents crash when reusing cached items)
-            cached.menu?.removeItem(cached)
+            // Note: do NOT removeItem from current menu — the reconciler in populateMainMenu
+            // handles repositioning. Detaching here closes any open submenu chain.
             self.menuItemFactory.updateItem(cached, with: card, highlightable: true, showsSubmenuIndicator: true)
             cached.isEnabled = true
-            cached.submenu = submenu
+            // Only reassign submenu when it's a different NSMenu instance. The submenu cache
+            // mutates in place when data changes, so the instance is normally stable —
+            // reassigning would still be a no-op, but the explicit guard makes the contract
+            // visible to future readers.
+            if cached.submenu !== submenu {
+                cached.submenu = submenu
+            }
             cached.target = self.target
             cached.action = #selector(self.target.menuItemNoOp(_:))
             return cached
@@ -57,11 +63,23 @@ extension StatusBarMenuBuilder {
             changelogHeadline: changelogHeadline,
             isPinned: isPinned
         )
-        if let cached = self.repoSubmenuCache[repo.id], cached.signature == signature {
+        if let cached = self.repoSubmenuCache[repo.id] {
+            if cached.signature == signature {
+                return cached.menu
+            }
+            // Mutate the existing NSMenu in place. AppKit only treats a submenu as
+            // detached when its parent reassigns `submenu = newMenu`; reconciling items
+            // inside the same NSMenu instance preserves any open child submenu.
+            RepoSubmenuBuilder(menuBuilder: self).populate(cached, for: repo, isPinned: isPinned)
+            cached.signature = signature
             return cached.menu
         }
-        let menu = self.makeRepoSubmenu(for: repo, isPinned: isPinned)
-        self.repoSubmenuCache[repo.id] = RepoSubmenuCacheEntry(menu: menu, signature: signature)
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.delegate = self.target
+        let entry = RepoSubmenuCacheEntry(menu: menu, signature: signature)
+        RepoSubmenuBuilder(menuBuilder: self).populate(entry, for: repo, isPinned: isPinned)
+        self.repoSubmenuCache[repo.id] = entry
         return menu
     }
 

@@ -8,9 +8,11 @@ final class RecentListMenuCoordinator {
     let appState: AppState
     let menuBuilder: StatusBarMenuBuilder
     let menuItemFactory: MenuItemViewFactory
-    private let menuService: RecentMenuService
+    let menuService: RecentMenuService
     private let logger = RepoBarLogging.logger("recent-list")
-    private var recentListMenus: [ObjectIdentifier: RecentListMenuEntry] = [:]
+    var recentListMenus: [ObjectIdentifier: RecentListMenuEntry] = [:]
+    var workflowMenus: [ObjectIdentifier: WorkflowMenuEntry] = [:]
+    var workflowStates: [String: WorkflowDispatchMenuState] = [:]
     let issueLabelChipLimit = AppLimits.RecentLists.issueLabelChipLimit
 
     var webURLBuilder: RepoWebURLBuilder {
@@ -41,9 +43,18 @@ final class RecentListMenuCoordinator {
 
     func pruneMenus() {
         self.recentListMenus = self.recentListMenus.filter { $0.value.menu != nil }
+        self.workflowMenus = self.workflowMenus.filter { $0.value.menu != nil }
     }
 
     func handleMenuWillOpen(_ menu: NSMenu) -> Bool {
+        if let entry = self.workflowMenus[ObjectIdentifier(menu)] {
+            self.menuBuilder.refreshMenuViewHeights(in: menu)
+            Task { @MainActor [weak self] in
+                await self?.refreshWorkflowMenu(menu: menu, entry: entry)
+            }
+            return true
+        }
+
         guard let entry = self.recentListMenus[ObjectIdentifier(menu)] else { return false }
 
         self.menuBuilder.refreshMenuViewHeights(in: menu)
@@ -324,6 +335,10 @@ final class RecentListMenuCoordinator {
         case let .releases(releases):
             for release in releases.prefix(self.menuService.listLimit) {
                 self.addReleaseMenuItem(release, to: menu)
+            }
+        case let .workflows(workflows):
+            for workflow in workflows.prefix(self.menuService.listLimit) {
+                self.addWorkflowMenuItem(workflow, repoFullName: repoFullName, to: menu)
             }
         case let .workflowRuns(runs):
             for run in runs.prefix(self.menuService.listLimit) {
