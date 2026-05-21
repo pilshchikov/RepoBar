@@ -534,12 +534,7 @@ public actor GitHubClient {
     }
 
     public func recentBranches(owner: String, name: String, limit: Int = 20) async throws -> [RepoBranchSummary] {
-        do {
-            return try await self.graphQL.recentBranches(owner: owner, name: name, limit: limit)
-        } catch {
-            await self.diag.message("GraphQL recent branches failed for \(owner)/\(name): \(error.userFacingMessage); falling back to REST")
-            return try await self.restAPI.recentBranches(owner: owner, name: name, limit: limit)
-        }
+        try await self.graphQL.recentBranches(owner: owner, name: name, limit: limit)
     }
 
     public func repoContents(owner: String, name: String, path: String? = nil) async throws -> [RepoContentItem] {

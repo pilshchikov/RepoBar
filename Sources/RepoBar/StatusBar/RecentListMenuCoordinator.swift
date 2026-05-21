@@ -166,7 +166,9 @@ final class RecentListMenuCoordinator {
         )
         let actions = self.actions(for: context.kind, fullName: context.fullName)
         let cached = descriptor.cached(context.fullName, now, self.menuService.cacheTTL)
-        let stale = cached ?? descriptor.stale(context.fullName)
+        let staleCandidate = cached ?? descriptor.stale(context.fullName)
+        let hasLegacyBranchCache = Self.branchItemsMissingUpdateDates(staleCandidate)
+        let stale = hasLegacyBranchCache ? nil : staleCandidate
         let staleExtras = self.recentListExtras(for: context, items: stale)
         let cachedCount = cached?.count.description ?? "nil"
         let staleCount = stale?.count.description ?? "nil"
@@ -188,7 +190,8 @@ final class RecentListMenuCoordinator {
         }
         menu.update()
 
-        guard descriptor.needsRefresh(context.fullName, now, self.menuService.cacheTTL) else {
+        let needsRefresh = descriptor.needsRefresh(context.fullName, now, self.menuService.cacheTTL) || hasLegacyBranchCache
+        guard needsRefresh else {
             self.logger.debug("Recent list cache hit kind=\(String(describing: context.kind)) repo=\(context.fullName)")
             return
         }
@@ -360,7 +363,7 @@ final class RecentListMenuCoordinator {
                 self.addTagMenuItem(tag, repoFullName: repoFullName, to: menu)
             }
         case let .branches(branches):
-            for branch in branches.prefix(self.menuService.listLimit) {
+            for branch in Self.displayedRemoteBranches(branches, limit: self.menuService.listLimit) {
                 self.addBranchMenuItem(branch, repoFullName: repoFullName, to: menu)
             }
         case let .contributors(contributors):
@@ -390,6 +393,28 @@ final class RecentListMenuCoordinator {
         default:
             return []
         }
+    }
+
+    private static func displayedRemoteBranches(_ branches: [RepoBranchSummary], limit: Int) -> [RepoBranchSummary] {
+        let sorted = branches.sorted { lhs, rhs in
+            switch (lhs.updatedAt, rhs.updatedAt) {
+            case let (lhsDate?, rhsDate?) where lhsDate != rhsDate:
+                return lhsDate > rhsDate
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+        }
+        return Array(sorted.prefix(limit))
+    }
+
+    private static func branchItemsMissingUpdateDates(_ items: RecentMenuItems?) -> Bool {
+        guard case let .branches(branches) = items else { return false }
+
+        return branches.contains { $0.updatedAt == nil }
     }
 
     private func openAction(for kind: RepoRecentMenuKind) -> Selector {
