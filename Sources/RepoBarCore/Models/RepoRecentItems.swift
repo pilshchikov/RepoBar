@@ -291,11 +291,13 @@ public struct RepoBranchSummary: Sendable, Hashable {
     public let name: String
     public let commitSHA: String
     public let isProtected: Bool
+    public let updatedAt: Date?
 
-    public init(name: String, commitSHA: String, isProtected: Bool) {
+    public init(name: String, commitSHA: String, isProtected: Bool, updatedAt: Date? = nil) {
         self.name = name
         self.commitSHA = commitSHA
         self.isProtected = isProtected
+        self.updatedAt = updatedAt
     }
 }
 

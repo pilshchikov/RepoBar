@@ -199,6 +199,93 @@ actor GraphQLClient {
         }
     }
 
+    func recentBranches(owner: String, name: String, limit: Int = 20) async throws -> [RepoBranchSummary] {
+        let limit = max(1, min(limit, 100))
+        let token = try await tokenProvider?() ?? { throw URLError(.userAuthenticationRequired) }()
+        await diag.message("GraphQL RecentBranches \(owner)/\(name)")
+        let startedAt = Date()
+
+        let body = GraphQLRequest(
+            query: """
+            query RecentBranches($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                refs(refPrefix: "refs/heads/", first: \(limit), orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {
+                  nodes {
+                    name
+                    branchProtectionRule { id }
+                    target {
+                      ... on Commit {
+                        oid
+                        committedDate
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """,
+            variables: ["owner": owner, "name": name]
+        )
+
+        let bodyData = try JSONEncoder().encode(body)
+        let cacheKey = self.cacheKey(operation: "RecentBranches", bodyData: bodyData)
+        if let cached = self.responseCache?.cached(key: cacheKey, maxAge: self.responseCacheTTL) {
+            await self.diag.message("GraphQL RecentBranches \(owner)/\(name) cached")
+            return try self.decodeRecentBranches(from: cached.data)
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.httpBody = bodyData
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            if let stale = self.responseCache?.stale(key: cacheKey) {
+                await self.diag.message("GraphQL RecentBranches \(owner)/\(name) using stale cache after \(error.userFacingMessage)")
+                return try self.decodeRecentBranches(from: stale.data)
+            }
+            throw error
+        }
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+
+        await self.logGraphQLResponse(http, label: "RecentBranches", startedAt: startedAt)
+        if let snapshot = RateLimitSnapshot.from(response: http) {
+            self.rateLimit = snapshot
+        }
+        guard http.statusCode == 200 else {
+            await self.diag.message("GraphQL status \(http.statusCode) for branches \(owner)/\(name)")
+            if let stale = self.responseCache?.stale(key: cacheKey), Self.canUseStaleCache(for: http.statusCode) {
+                await self.diag.message("GraphQL RecentBranches \(owner)/\(name) using stale cache for HTTP \(http.statusCode)")
+                return try self.decodeRecentBranches(from: stale.data)
+            }
+            if http.statusCode == 401 {
+                throw URLError(.userAuthenticationRequired)
+            }
+            throw self.graphQLError(response: http)
+        }
+
+        self.responseCache?.save(key: cacheKey, endpoint: self.endpoint, operation: "RecentBranches", body: bodyData, responseBody: data)
+        return try self.decodeRecentBranches(from: data)
+    }
+
+    private func decodeRecentBranches(from data: Data) throws -> [RepoBranchSummary] {
+        let decoded = try decoder.decode(GraphQLResponse<RecentBranchesData>.self, from: data)
+        return decoded.data.repository?.refs.nodes?.compactMap { node in
+            guard let commit = node.target else { return nil }
+            return RepoBranchSummary(
+                name: node.name,
+                commitSHA: commit.oid,
+                isProtected: node.branchProtectionRule != nil,
+                updatedAt: commit.committedDate
+            )
+        } ?? []
+    }
+
     func rateLimitSnapshot() -> RateLimitSnapshot? {
         self.rateLimit
     }
@@ -294,6 +381,33 @@ private struct ReleaseNode: Decodable {
 
 private struct CountContainer: Decodable {
     let totalCount: Int
+}
+
+private struct RecentBranchesData: Decodable {
+    let repository: RecentBranchesRepository?
+}
+
+private struct RecentBranchesRepository: Decodable {
+    let refs: RefConnection
+}
+
+private struct RefConnection: Decodable {
+    let nodes: [RefNode]?
+}
+
+private struct RefNode: Decodable {
+    let name: String
+    let branchProtectionRule: BranchProtectionRule?
+    let target: RefCommit?
+}
+
+private struct BranchProtectionRule: Decodable {
+    let id: String
+}
+
+private struct RefCommit: Decodable {
+    let oid: String
+    let committedDate: Date
 }
 
 private struct UserContributionData: Decodable {

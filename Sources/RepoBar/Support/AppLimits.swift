@@ -66,6 +66,7 @@ enum AppLimits {
     enum LocalRepo {
         static let mainMenuDirtyFileLimit: Int = 3
         static let submenuDirtyFileLimit: Int = 10
+        static let branchMenuLimit: Int = 20
         static let discoveryCacheTTL: TimeInterval = 10 * 60
         static let statusCacheTTL: TimeInterval = 2 * 60
         static let snapshotConcurrencyLimit: Int = 6

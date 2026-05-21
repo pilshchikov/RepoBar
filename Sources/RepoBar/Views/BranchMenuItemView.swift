@@ -26,7 +26,7 @@ struct BranchMenuItemView: View {
                     }
                 }
 
-                Text(self.shortSHA)
+                Text(self.detailText)
                     .font(.caption)
                     .monospaced()
                     .foregroundStyle(MenuHighlightStyle.secondary(self.isHighlighted))
@@ -37,5 +37,11 @@ struct BranchMenuItemView: View {
 
     private var shortSHA: String {
         String(self.summary.commitSHA.prefix(7))
+    }
+
+    private var detailText: String {
+        guard let updatedAt = self.summary.updatedAt else { return self.shortSHA }
+
+        return "\(RelativeFormatter.string(from: updatedAt, relativeTo: Date())) - \(self.shortSHA)"
     }
 }

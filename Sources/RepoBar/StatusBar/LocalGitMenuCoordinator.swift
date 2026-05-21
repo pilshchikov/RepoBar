@@ -220,23 +220,13 @@ final class LocalGitMenuCoordinator {
                 )
                 menu.addItem(self.makeLocalBranchMenuItem(model, repoPath: repoPath, fullName: fullName, isCurrent: true))
             }
-            for branch in snapshot.branches {
-                let dirtySummary = branch.isCurrent ? entry.localStatus?.dirtyCounts?.summary : nil
-                let model = LocalRefMenuRowViewModel(
-                    kind: .branch,
-                    title: branch.name,
-                    detail: nil,
-                    isCurrent: branch.isCurrent,
-                    isDetached: false,
-                    upstream: branch.upstream,
-                    aheadCount: branch.aheadCount,
-                    behindCount: branch.behindCount,
-                    lastCommitDate: branch.lastCommitDate,
-                    lastCommitAuthor: branch.lastCommitAuthor,
-                    dirtySummary: dirtySummary
-                )
-                menu.addItem(self.makeLocalBranchMenuItem(model, repoPath: repoPath, fullName: fullName, isCurrent: branch.isCurrent))
-            }
+            self.addLocalBranchItems(
+                Self.displayedLocalBranches(from: snapshot.branches),
+                to: menu,
+                repoPath: repoPath,
+                fullName: fullName,
+                localStatus: entry.localStatus
+            )
             self.menuBuilder.refreshMenuViewHeights(in: menu)
             menu.update()
         case let .failure(error):
@@ -374,23 +364,13 @@ final class LocalGitMenuCoordinator {
                 )
                 menu.addItem(self.makeLocalBranchMenuItem(model, repoPath: entry.repoPath, fullName: entry.fullName, isCurrent: true))
             }
-            for branch in snapshot.branches {
-                let dirtySummary = branch.isCurrent ? entry.localStatus?.dirtyCounts?.summary : nil
-                let model = LocalRefMenuRowViewModel(
-                    kind: .branch,
-                    title: branch.name,
-                    detail: nil,
-                    isCurrent: branch.isCurrent,
-                    isDetached: false,
-                    upstream: branch.upstream,
-                    aheadCount: branch.aheadCount,
-                    behindCount: branch.behindCount,
-                    lastCommitDate: branch.lastCommitDate,
-                    lastCommitAuthor: branch.lastCommitAuthor,
-                    dirtySummary: dirtySummary
-                )
-                menu.addItem(self.makeLocalBranchMenuItem(model, repoPath: entry.repoPath, fullName: entry.fullName, isCurrent: branch.isCurrent))
-            }
+            self.addLocalBranchItems(
+                Self.displayedLocalBranches(from: snapshot.branches),
+                to: menu,
+                repoPath: entry.repoPath,
+                fullName: entry.fullName,
+                localStatus: entry.localStatus
+            )
         case let .failure(error):
             menu.addItem(self.menuBuilder.infoItem("Failed to load local branches"))
             self.presentAlert(title: "Branch list failed", message: error.userFacingMessage)
@@ -421,6 +401,48 @@ final class LocalGitMenuCoordinator {
 
         self.menuBuilder.refreshMenuViewHeights(in: menu)
         menu.update()
+    }
+
+    private func addLocalBranchItems(
+        _ branches: [LocalGitBranchDetails],
+        to menu: NSMenu,
+        repoPath: URL,
+        fullName: String,
+        localStatus: LocalRepoStatus?
+    ) {
+        for branch in branches {
+            let dirtySummary = branch.isCurrent ? localStatus?.dirtyCounts?.summary : nil
+            let model = LocalRefMenuRowViewModel(
+                kind: .branch,
+                title: branch.name,
+                detail: nil,
+                isCurrent: branch.isCurrent,
+                isDetached: false,
+                upstream: branch.upstream,
+                aheadCount: branch.aheadCount,
+                behindCount: branch.behindCount,
+                lastCommitDate: branch.lastCommitDate,
+                lastCommitAuthor: branch.lastCommitAuthor,
+                dirtySummary: dirtySummary
+            )
+            menu.addItem(self.makeLocalBranchMenuItem(model, repoPath: repoPath, fullName: fullName, isCurrent: branch.isCurrent))
+        }
+    }
+
+    static func displayedLocalBranches(from branches: [LocalGitBranchDetails]) -> [LocalGitBranchDetails] {
+        let sorted = branches.sorted { lhs, rhs in
+            switch (lhs.lastCommitDate, rhs.lastCommitDate) {
+            case let (lhsDate?, rhsDate?) where lhsDate != rhsDate:
+                return lhsDate > rhsDate
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+        }
+        return Array(sorted.prefix(AppLimits.LocalRepo.branchMenuLimit))
     }
 
     private func refreshLocalWorktreeMenu(menu: NSMenu, entry: LocalGitMenuEntry) async {
