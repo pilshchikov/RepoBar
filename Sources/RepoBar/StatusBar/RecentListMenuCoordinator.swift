@@ -12,7 +12,7 @@ final class RecentListMenuCoordinator {
     private let logger = RepoBarLogging.logger("recent-list")
     var recentListMenus: [ObjectIdentifier: RecentListMenuEntry] = [:]
     var workflowMenus: [ObjectIdentifier: WorkflowMenuEntry] = [:]
-    var workflowStates: [String: WorkflowDispatchMenuState] = [:]
+    var workflowStates: [String: WorkflowMenuState] = [:]
     let issueLabelChipLimit = AppLimits.RecentLists.issueLabelChipLimit
 
     var webURLBuilder: RepoWebURLBuilder {

@@ -609,71 +609,6 @@ struct GitHubRestAPI {
         )
     }
 
-    func recentBranchesByCommitDate(owner: String, name: String, limit: Int = 10) async throws -> [RepoBranchSummary] {
-        let token = try await tokenProvider()
-        let baseURL = await apiHost()
-        var components = URLComponents(
-            url: baseURL.appending(path: "/repos/\(owner)/\(name)/branches"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [URLQueryItem(name: "per_page", value: "100")]
-        let (data, _) = try await authorizedGet(url: components.url!, token: token)
-        let branches = try GitHubDecoding.decode([WorkflowBranchResponse].self, from: data)
-        let branchesWithDates = await withTaskGroup(of: (WorkflowBranchResponse, Date?).self) { group in
-            for branch in branches {
-                group.addTask {
-                    let fetchedDate = try? await self.commitDate(
-                        owner: owner,
-                        name: name,
-                        sha: branch.commit.sha,
-                        token: token,
-                        baseURL: baseURL
-                    )
-                    return (branch, fetchedDate ?? branch.commitDate)
-                }
-            }
-
-            var collected: [(WorkflowBranchResponse, Date?)] = []
-            for await branch in group {
-                collected.append(branch)
-            }
-            return collected
-        }
-
-        let sorted = branchesWithDates.sorted {
-            switch ($0.1, $1.1) {
-            case let (left?, right?):
-                if left != right { return left > right }
-            case (_?, nil):
-                return true
-            case (nil, _?):
-                return false
-            default:
-                break
-            }
-            return $0.0.name.localizedCaseInsensitiveCompare($1.0.name) == .orderedAscending
-        }
-        return sorted.prefix(max(1, min(limit, 100))).map {
-            let branch = $0.0
-            return RepoBranchSummary(name: branch.name, commitSHA: branch.commit.sha, isProtected: branch.protected)
-        }
-    }
-
-    func dispatchWorkflow(owner: String, name: String, workflowID: Int, ref: String, inputs: [String: String]) async throws {
-        let token = try await tokenProvider()
-        let baseURL = await apiHost()
-        let url = baseURL.appending(path: "/repos/\(owner)/\(name)/actions/workflows/\(workflowID)/dispatches")
-        let payload = WorkflowDispatchRequest(ref: ref, inputs: inputs)
-        let body = try JSONEncoder().encode(payload)
-        _ = try await authorizedPost(
-            url: url,
-            token: token,
-            body: body,
-            allowedStatuses: [204],
-            headers: ["Content-Type": "application/json"]
-        )
-    }
-
     func recentCommits(owner: String, name: String, limit: Int = 20) async throws -> RepoCommitList {
         let token = try await tokenProvider()
         let limit = max(1, min(limit, 100))
@@ -826,80 +761,10 @@ struct GitHubRestAPI {
         )
     }
 
-    private func authorizedPost(
-        url: URL,
-        token: String,
-        body: Data?,
-        allowedStatuses: Set<Int> = [200, 201, 202, 204],
-        headers: [String: String] = [:]
-    ) async throws -> (Data, HTTPURLResponse) {
-        try await self.requestRunner.post(
-            url: url,
-            token: token,
-            body: body,
-            allowedStatuses: allowedStatuses,
-            headers: headers
-        )
-    }
-
-    private func commitDate(
-        owner: String,
-        name: String,
-        sha: String,
-        token: String,
-        baseURL: URL
-    ) async throws -> Date? {
-        let url = baseURL.appending(path: "/repos/\(owner)/\(name)/commits/\(sha)")
-        let (data, _) = try await authorizedGet(url: url, token: token)
-        let response = try GitHubDecoding.decode(WorkflowCommitResponse.self, from: data)
-        return response.commit.committer?.date ?? response.commit.author?.date
-    }
 }
 
 private struct CommitRecentResponse: Decodable {
     let sha: String
-}
-
-private struct WorkflowDispatchRequest: Encodable {
-    let ref: String
-    let inputs: [String: String]
-}
-
-private struct WorkflowBranchResponse: Decodable {
-    let name: String
-    let commit: Commit
-    let protected: Bool
-
-    struct Commit: Decodable {
-        let sha: String
-        let commit: Details?
-
-        struct Details: Decodable {
-            let committer: Signature?
-            let author: Signature?
-
-            struct Signature: Decodable {
-                let date: Date?
-            }
-        }
-    }
-
-    var commitDate: Date? {
-        self.commit.commit?.committer?.date ?? self.commit.commit?.author?.date
-    }
-}
-
-private struct WorkflowCommitResponse: Decodable {
-    let commit: Details
-
-    struct Details: Decodable {
-        let committer: Signature?
-        let author: Signature?
-
-        struct Signature: Decodable {
-            let date: Date?
-        }
-    }
 }
 
 private struct InstallationReposResponse: Decodable {

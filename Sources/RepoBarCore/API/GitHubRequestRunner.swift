@@ -54,24 +54,6 @@ actor GitHubRequestRunner {
         )
     }
 
-    func post(
-        url: URL,
-        token: String,
-        body: Data?,
-        allowedStatuses: Set<Int> = [200, 201, 202, 204],
-        headers: [String: String] = [:]
-    ) async throws -> (Data, HTTPURLResponse) {
-        try await self.request(
-            method: "POST",
-            url: url,
-            token: token,
-            allowedStatuses: allowedStatuses,
-            headers: headers,
-            body: body,
-            useETag: false
-        )
-    }
-
     private func request(
         method: String,
         url: URL,
